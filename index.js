@@ -39,18 +39,26 @@ function hsmCreateAesKey(session) {
 /**
  * Generate the RSA key in HSM (this is the customer key for BYOK)
  * @param {} session - PKCS11 session
+ * @param {} label - HSM key label
+ * @param {} id - HSM key id
  */
-function hsmCreateRsaKey(session) {
+function hsmCreateRsaKey(session, label, id) {
   return session.generateKeyPair(
     graphene.KeyGenMechanism.RSA,
     {
       keyType: graphene.KeyType.RSA,
       modulusBits: 2048,
       publicExponent: Buffer.from([3]),
+      token: true,
+      label,
+      id,
     },
     {
       keyType: graphene.KeyType.RSA,
       extractable: true,
+      token: true,
+      label,
+      id,
     },
   );
 }
@@ -98,9 +106,8 @@ function hsmWrapAesKey(session, rsaPublicKey, aesKey) {
   try {
     return session.wrapKey(wrappingAlgorithm, publicKey, aesKey);
   } catch (err) {
-    console.error(`Error wrapping key using RSA_PKCS_OAEP (The HSM may not support OAEP with SHA256): ${err}`);
-
     if (!UNSAFE_USE_LOCAL_OAEP) {
+      console.error(`Error wrapping key using RSA_PKCS_OAEP (The HSM may not support OAEP with SHA256): ${err}`);
       throw err;
     }
 
@@ -114,7 +121,7 @@ function hsmWrapAesKey(session, rsaPublicKey, aesKey) {
  * @param {} aesKey - the AES key to be wrapped
  */
 function localWrapAesKey(rsaPublicKey, aesKey) {
-  console.warn('Using local computer to wrap the AES key');
+  console.warn('WARNING: Using local computer to wrap the AES key');
   const aesKeyValue = Buffer.from(aesKey.getAttribute('value')).toString('binary');
 
   const encrypted = rsaPublicKey.encrypt(
@@ -155,7 +162,7 @@ if (!(slot.flags & graphene.SlotFlag.TOKEN_PRESENT)) {
   mod.finalize();
   throw new Error();
 }
-const session = slot.open();
+const session = slot.open(graphene.SessionFlag.RW_SESSION | graphene.SessionFlag.SERIAL_SESSION);
 session.login(HSM_LOGIN_PIN);
 
 if (USE_SAFENET) {
@@ -173,7 +180,10 @@ const wrappedAesKey = hsmWrapAesKey(session, salesforceKey, aesKey)
   || (UNSAFE_USE_LOCAL_OAEP && localWrapAesKey(salesforceKey, aesKey));
 
 // Generate RSA key (RSA 2048)
-const rsaKey = hsmCreateRsaKey(session);
+const label = `MC_${Date.now()}`;
+const id = Buffer.from(label);
+console.log(`Creating RSA private/public key object in HSM: label = ${label}, id = ${id}`);
+const rsaKey = hsmCreateRsaKey(session, label, id);
 
 // Wrap the RSA private key with the Intermediate Key (AES WRAP PAD)
 const wrappedRsaKey = hsmWrapRsaKey(session, aesKey, rsaKey);
